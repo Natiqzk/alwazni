@@ -1,0 +1,531 @@
+import os
+import sqlite3
+from datetime import date
+
+from kivy.app import App
+from kivy.lang import Builder
+from kivy.metrics import dp
+from kivy.properties import NumericProperty
+from kivy.uix.button import Button
+from kivy.uix.label import Label
+from kivy.uix.popup import Popup
+from kivy.uix.screenmanager import Screen, ScreenManager
+
+
+# =========================================
+# إعداد قاعدة البيانات
+# =========================================
+
+مسار_قاعدة_البيانات = os.path.join(
+    os.path.dirname(__file__),
+    "teacher_app.db"
+)
+
+
+def الاتصال_بقاعدة_البيانات():
+    return sqlite3.connect(مسار_قاعدة_البيانات)
+
+
+def إنشاء_قاعدة_البيانات():
+    اتصال = الاتصال_بقاعدة_البيانات()
+    مؤشر = اتصال.cursor()
+
+    مؤشر.execute("""
+        CREATE TABLE IF NOT EXISTS diaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            diary_date TEXT NOT NULL DEFAULT '',
+            student_name TEXT NOT NULL DEFAULT '',
+            class_name TEXT NOT NULL DEFAULT '',
+            section TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL DEFAULT ''
+        )
+    """)
+
+    اتصال.commit()
+    اتصال.close()
+
+
+# =========================================
+# رسائل التطبيق
+# =========================================
+
+def عرض_رسالة(العنوان, النص):
+    Popup(
+        title=العنوان,
+        content=Label(
+            text=النص,
+            halign="center",
+            valign="middle"
+        ),
+        size_hint=(0.85, 0.3)
+    ).open()
+
+
+# =========================================
+# شاشة قائمة اليوميات
+# =========================================
+
+class شاشة_القائمة(Screen):
+
+    def on_pre_enter(self):
+        self.عرض_اليوميات()
+
+    def عرض_اليوميات(self):
+        حاوية = self.ids.حاوية_اليوميات
+        حاوية.clear_widgets()
+
+        اتصال = الاتصال_بقاعدة_البيانات()
+        مؤشر = اتصال.cursor()
+
+        مؤشر.execute("""
+            SELECT
+                id,
+                diary_date,
+                student_name,
+                section,
+                class_name,
+                title,
+                content
+            FROM diaries
+            ORDER BY id DESC
+        """)
+
+        اليوميات = مؤشر.fetchall()
+        اتصال.close()
+
+        if not اليوميات:
+            حاوية.add_widget(
+                Label(
+                    text="لا توجد يوميات مسجلة",
+                    size_hint_y=None,
+                    height=dp(60),
+                    font_size=dp(18)
+                )
+            )
+            return
+
+        for يومية in اليوميات:
+            رقم = يومية[0]
+            التاريخ = يومية[1]
+            اسم_الطالب = يومية[2]
+            الشعبة = يومية[3]
+            الصف = يومية[4]
+            العنوان = يومية[5]
+
+            نص_الزر = (
+                f"الطالب: {اسم_الطالب}\n"
+                f"العنوان: {العنوان}\n"
+                f"التاريخ: {التاريخ} | "
+                f"الصف: {الصف} | الشعبة: {الشعبة}"
+            )
+
+            زر = Button(
+                text=نص_الزر,
+                size_hint_y=None,
+                height=dp(95),
+                halign="right",
+                valign="middle"
+            )
+
+            زر.bind(
+                on_release=lambda الزر,
+                رقم_اليومية=رقم:
+                self.فتح_اليومية(رقم_اليومية)
+            )
+
+            حاوية.add_widget(زر)
+
+    def فتح_اليومية(self, رقم_اليومية):
+        شاشة_التحرير = self.manager.get_screen("التحرير")
+        شاشة_التحرير.تحميل_اليومية(رقم_اليومية)
+        self.manager.current = "التحرير"
+
+    def يومية_جديدة(self):
+        شاشة_التحرير = self.manager.get_screen("التحرير")
+        شاشة_التحرير.مسح_الحقول()
+        self.manager.current = "التحرير"
+
+
+# =========================================
+# شاشة إضافة وتعديل اليومية
+# =========================================
+
+class شاشة_التحرير(Screen):
+
+    رقم_اليومية = NumericProperty(0)
+
+    def on_pre_enter(self):
+        if self.رقم_اليومية == 0 and not self.ids.التاريخ.text:
+            self.ids.التاريخ.text = str(date.today())
+
+    def مسح_الحقول(self):
+        self.رقم_اليومية = 0
+
+        self.ids.التاريخ.text = str(date.today())
+        self.ids.اسم_الطالب.text = ""
+        self.ids.الشعبة.text = ""
+        self.ids.الصف.text = ""
+        self.ids.العنوان.text = ""
+        self.ids.المحتوى.text = ""
+
+        self.ids.زر_الحذف.disabled = True
+        self.ids.عنوان_الشاشة.text = "إضافة يومية جديدة"
+
+    def تحميل_اليومية(self, رقم_اليومية):
+        اتصال = الاتصال_بقاعدة_البيانات()
+        مؤشر = اتصال.cursor()
+
+        مؤشر.execute("""
+            SELECT
+                id,
+                diary_date,
+                student_name,
+                section,
+                class_name,
+                title,
+                content
+            FROM diaries
+            WHERE id = ?
+        """, (رقم_اليومية,))
+
+        يومية = مؤشر.fetchone()
+        اتصال.close()
+
+        if not يومية:
+            عرض_رسالة("تنبيه", "لم يتم العثور على اليومية")
+            return
+
+        (
+            self.رقم_اليومية,
+            التاريخ,
+            اسم_الطالب,
+            الشعبة,
+            الصف,
+            العنوان,
+            المحتوى
+        ) = يومية
+
+        self.ids.التاريخ.text = التاريخ
+        self.ids.اسم_الطالب.text = اسم_الطالب
+        self.ids.الشعبة.text = الشعبة
+        self.ids.الصف.text = الصف
+        self.ids.العنوان.text = العنوان
+        self.ids.المحتوى.text = المحتوى
+
+        self.ids.زر_الحذف.disabled = False
+        self.ids.عنوان_الشاشة.text = "تعديل اليومية"
+
+    def حفظ_اليومية(self):
+        التاريخ = self.ids.التاريخ.text.strip()
+        اسم_الطالب = self.ids.اسم_الطالب.text.strip()
+        الشعبة = self.ids.الشعبة.text.strip()
+        الصف = self.ids.الصف.text.strip()
+        العنوان = self.ids.العنوان.text.strip()
+        المحتوى = self.ids.المحتوى.text.strip()
+
+        if not التاريخ:
+            عرض_رسالة("تنبيه", "يرجى إدخال التاريخ")
+            return
+
+        if not اسم_الطالب:
+            عرض_رسالة("تنبيه", "يرجى إدخال اسم الطالب")
+            return
+
+        if not الشعبة:
+            عرض_رسالة("تنبيه", "يرجى إدخال الشعبة")
+            return
+
+        if not الصف:
+            عرض_رسالة("تنبيه", "يرجى إدخال الصف")
+            return
+
+        if not العنوان:
+            عرض_رسالة("تنبيه", "يرجى إدخال عنوان اليومية")
+            return
+
+        if not المحتوى:
+            عرض_رسالة("تنبيه", "يرجى إدخال محتوى اليومية")
+            return
+
+        اتصال = الاتصال_بقاعدة_البيانات()
+        مؤشر = اتصال.cursor()
+
+        if self.رقم_اليومية == 0:
+            مؤشر.execute("""
+                INSERT INTO diaries (
+                    diary_date,
+                    student_name,
+                    class_name,
+                    section,
+                    title,
+                    content
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                التاريخ,
+                اسم_الطالب,
+                الصف,
+                الشعبة,
+                العنوان,
+                المحتوى
+            ))
+
+            رسالة = "تمت إضافة اليومية بنجاح"
+
+        else:
+            مؤشر.execute("""
+                UPDATE diaries
+                SET
+                    diary_date = ?,
+                    student_name = ?,
+                    class_name = ?,
+                    section = ?,
+                    title = ?,
+                    content = ?
+                WHERE id = ?
+            """, (
+                التاريخ,
+                اسم_الطالب,
+                الصف,
+                الشعبة,
+                العنوان,
+                المحتوى,
+                self.رقم_اليومية
+            ))
+
+            رسالة = "تم تعديل اليومية بنجاح"
+
+        اتصال.commit()
+        اتصال.close()
+
+        عرض_رسالة("تم", رسالة)
+
+        self.رقم_اليومية = 0
+        self.manager.current = "القائمة"
+
+    def حذف_اليومية(self):
+        if self.رقم_اليومية == 0:
+            return
+
+        self.عرض_تأكيد_الحذف()
+
+    def عرض_تأكيد_الحذف(self):
+        منظم = __import__("kivy.uix.boxlayout", fromlist=["BoxLayout"])
+        BoxLayout = منظم.BoxLayout
+
+        حاوية = BoxLayout(
+            orientation="vertical",
+            spacing=dp(10),
+            padding=dp(10)
+        )
+
+        Label(
+            text="هل تريد حذف اليومية نهائيًا؟"
+        )
+
+        أزرار = BoxLayout(
+            spacing=dp(10),
+            size_hint_y=None,
+            height=dp(50)
+        )
+
+        زر_نعم = Button(text="نعم، احذف")
+        زر_لا = Button(text="إلغاء")
+
+        أزرار.add_widget(زر_نعم)
+        أزرار.add_widget(زر_لا)
+        حاوية.add_widget(
+            Label(text="هل تريد حذف اليومية نهائيًا؟")
+        )
+        حاوية.add_widget(أزرار)
+
+        نافذة = Popup(
+            title="تأكيد الحذف",
+            content=حاوية,
+            size_hint=(0.85, 0.3)
+        )
+
+        زر_نعم.bind(
+            on_release=lambda زر: (
+                نافذة.dismiss(),
+                self.تنفيذ_الحذف()
+            )
+        )
+
+        زر_لا.bind(
+            on_release=نافذة.dismiss
+        )
+
+        نافذة.open()
+
+    def تنفيذ_الحذف(self):
+        اتصال = الاتصال_بقاعدة_البيانات()
+        مؤشر = اتصال.cursor()
+
+        مؤشر.execute("""
+            DELETE FROM diaries
+            WHERE id = ?
+        """, (self.رقم_اليومية,))
+
+        اتصال.commit()
+        اتصال.close()
+
+        self.رقم_اليومية = 0
+
+        عرض_رسالة("تم", "تم حذف اليومية بنجاح")
+
+        self.manager.current = "القائمة"
+
+
+# =========================================
+# تصميم الواجهات
+# =========================================
+
+واجهة_KV = r'''
+#:import dp kivy.metrics.dp
+
+<شاشة_القائمة>:
+
+    BoxLayout:
+        orientation: "vertical"
+        padding: dp(12)
+        spacing: dp(10)
+
+        Label:
+            text: "نظام اليوميات"
+            font_size: dp(25)
+            size_hint_y: None
+            height: dp(55)
+
+        Button:
+            text: "إضافة يومية جديدة"
+            size_hint_y: None
+            height: dp(55)
+            font_size: dp(18)
+            on_release: root.يومية_جديدة()
+
+        ScrollView:
+
+            GridLayout:
+                id: حاوية_اليوميات
+                cols: 1
+                spacing: dp(8)
+                padding: dp(3)
+                size_hint_y: None
+                height: self.minimum_height
+
+
+<شاشة_التحرير>:
+
+    BoxLayout:
+        orientation: "vertical"
+        padding: dp(12)
+        spacing: dp(8)
+
+        Label:
+            id: عنوان_الشاشة
+            text: "إضافة يومية جديدة"
+            font_size: dp(23)
+            size_hint_y: None
+            height: dp(50)
+
+        TextInput:
+            id: التاريخ
+            hint_text: "التاريخ"
+            text: ""
+            multiline: False
+            size_hint_y: None
+            height: dp(48)
+            font_size: dp(17)
+
+        TextInput:
+            id: اسم_الطالب
+            hint_text: "اسم الطالب"
+            multiline: False
+            size_hint_y: None
+            height: dp(48)
+            font_size: dp(17)
+
+        TextInput:
+            id: الشعبة
+            hint_text: "الشعبة"
+            multiline: False
+            size_hint_y: None
+            height: dp(48)
+            font_size: dp(17)
+
+        TextInput:
+            id: الصف
+            hint_text: "الصف"
+            multiline: False
+            size_hint_y: None
+            height: dp(48)
+            font_size: dp(17)
+
+        TextInput:
+            id: العنوان
+            hint_text: "عنوان اليومية"
+            multiline: False
+            size_hint_y: None
+            height: dp(48)
+            font_size: dp(17)
+
+        TextInput:
+            id: المحتوى
+            hint_text: "محتوى اليومية"
+            multiline: True
+            font_size: dp(17)
+
+        BoxLayout:
+            size_hint_y: None
+            height: dp(52)
+            spacing: dp(8)
+
+            Button:
+                text: "حفظ"
+                font_size: dp(17)
+                on_release: root.حفظ_اليومية()
+
+            Button:
+                id: زر_الحذف
+                text: "حذف"
+                font_size: dp(17)
+                disabled: True
+                on_release: root.حذف_اليومية()
+
+            Button:
+                text: "عودة"
+                font_size: dp(17)
+                on_release:
+                    root.رقم_اليومية = 0
+                    app.root.current = "القائمة"
+'''
+
+
+# =========================================
+# تشغيل التطبيق
+# =========================================
+
+class تطبيق_اليوميات(App):
+
+    def build(self):
+        إنشاء_قاعدة_البيانات()
+
+        Builder.load_string(واجهة_KV)
+
+        مدير_الشاشات = ScreenManager()
+
+        مدير_الشاشات.add_widget(
+            شاشة_القائمة(name="القائمة")
+        )
+
+        مدير_الشاشات.add_widget(
+            شاشة_التحرير(name="التحرير")
+        )
+
+        return مدير_الشاشات
+
+
+if __name__ == "__main__":
+    تطبيق_اليوميات().run()
